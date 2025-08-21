@@ -41,7 +41,6 @@ def split_rgb(img_arr: np.ndarray):
 
 
 def merge_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
-    h, w = r.shape
     arr = np.stack([r, g, b], axis=2).astype("uint8")
     return arr
 
