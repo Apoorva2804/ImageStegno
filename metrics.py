@@ -70,6 +70,7 @@ def save_csv(results: Dict[int, Dict[str, float]], out_csv: str) -> None:
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     with open(out_csv, "w", newline="") as f:
         w = csv.writer(f)
+        print(" ")
         w.writerow(["Dimension", "MSE", "RMSE", "PSNR(dB)", "NCC", "SSIM"])
         for d in sorted(results):
             r = results[d]
@@ -96,7 +97,7 @@ def main():
     for d in sorted(results):
         val = results[d]["PSNR"]
         print(f"D-{d} = {val:.2f} dB" if math.isfinite(val) else f"D-{d} = inf dB")  # [4]
-
+    print(" ")
 if __name__ == "__main__":
     main()
 
