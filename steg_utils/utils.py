@@ -1,102 +1,138 @@
+import os
+import numpy as np
 import hashlib
-import random
-from typing import List
 from .magic_lsb import generate_magic_square
+from .image_ops import split_blue_blocks, combine_blue_blocks
 
+# ------------------------------
+# Blue-block shuffling helpers
+# ------------------------------
+def make_shuffled_blue(blue: np.ndarray, perm):
+    """
+    Shuffle blue channel's 4 quadrant blocks according to perm (length 4, values 0..3).
+    """
+    blocks = split_blue_blocks(blue)
+    if len(perm) != 4 or not all(p in range(4) for p in perm):
+        raise ValueError(f"Invalid permutation {perm}, must be list of 4 values from 0–3.")
+    shuffled = [blocks[perm[i]] for i in range(4)]
+    return combine_blue_blocks(shuffled, blue.shape)
 
-def text_to_bytes(path: str) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
+def unshuffle_to_visual(blue_after_embed: np.ndarray, perm):
+    """
+    Inverse of make_shuffled_blue: place blocks back in their original visual quadrants.
+    """
+    blocks = split_blue_blocks(blue_after_embed)
+    unshuffled = [None] * 4
+    for i, p in enumerate(perm):
+        unshuffled[p] = blocks[i]
+    return combine_blue_blocks(unshuffled, blue_after_embed.shape)
 
+# ------------------------------
+# Basic text <-> bytes utilities
+# ------------------------------
+def text_to_bytes(s: str) -> bytes:
+    """
+    If 's' is a path to an existing file, read its bytes.
+    Otherwise, treat 's' as literal text and UTF-8 encode it.
+    """
+    if os.path.exists(s):
+        with open(s, "rb") as f:
+            return f.read()
+    return s.encode("utf-8")
 
 def bytes_to_text(b: bytes) -> str:
+    """Convert bytes back to string (UTF-8 with fallback)."""
     try:
         return b.decode("utf-8")
     except Exception:
         return b.decode("latin1", errors="replace")
 
-
-def generate_perm_from_key(key: str) -> List[int]:
+# ------------------------------
+# Key-based permutation (for 4 blocks)
+# ------------------------------
+def generate_perm_from_key(key: str):
     """
-    Deterministic permutation of 4 block indices derived from key.
-    Returns a permutation list of [0,1,2,3] shuffled by a seed derived from key.
+    Deterministic permutation of 4 indices [0,1,2,3] derived from key.
     """
     seed = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big")
-    rnd = random.Random(seed)
-    perm = [0, 1, 2, 3]
-    rnd.shuffle(perm)
-    return perm
+    rng = np.random.default_rng(seed)
+    return rng.permutation(4).tolist()
 
-
-def bytes_to_bitlist(b: bytes) -> List[int]:
-    bits = []
-    for byte in b:
-        for i in range(8):
-            bits.append((byte >> (7 - i)) & 1)
-    return bits
-
-
-def bitlist_to_bytes(bits: List[int]) -> bytes:
-    out = bytearray()
-    for i in range(0, len(bits), 8):
-        byte = 0
-        chunk = bits[i:i + 8]
-        # pad last chunk with zeros if needed
-        while len(chunk) < 8:
-            chunk.append(0)
-        for bit in chunk:
-            byte = (byte << 1) | int(bit)
-        out.append(byte & 0xFF)
-    return bytes(out)
-
-
-def embed_payload_in_channel(channel, payload_bytes: bytes, bits_per_pixel: int = 4):
+# ------------------------------
+# Magic-square-based visiting order
+# ------------------------------
+def generate_magic_indices(size: int):
     """
-    Embed payload_bytes into channel's LSBs using bits_per_pixel per pixel.
-    channel: 2D numpy uint8 array
-    returns modified channel
+    Generate a magic-square-based visiting order for `size` pixels,
+    tiling if necessary so it covers the whole channel.
     """
-    import numpy as np
-    flat = channel.flatten().astype(int)
-    bits = bytes_to_bitlist(payload_bytes)
-    total_bits = len(bits)
-    capacity = flat.size * bits_per_pixel
-    if total_bits > capacity:
-        raise ValueError(f"Not enough capacity: need {total_bits} bits, have {capacity} bits.")
+    n = int(np.floor(np.sqrt(size)))
+    if n % 2 == 0:
+        n -= 1
+    if n < 3:
+        n = 3  # smallest odd magic square we support
+
+    base_magic = generate_magic_square(n).flatten() - 1  # 0-based
+    indices = []
+    while len(indices) < size:
+        indices.extend(base_magic.tolist())
+    return np.array(indices[:size])
+
+# ------------------------------
+# LSB embedding / extraction
+# ------------------------------
+def embed_payload_in_channel(channel: np.ndarray, payload: bytes, bits_per_pixel: int = 2) -> np.ndarray:
+    if bits_per_pixel < 1 or bits_per_pixel > 4:
+        raise ValueError("bits_per_pixel must be between 1 and 4.")
+
+    flat = channel.flatten().astype(np.uint8)
+    total_bits = len(payload) * 8
+    capacity_bits = flat.size * bits_per_pixel
+    if total_bits > capacity_bits:
+        raise ValueError(f"Payload too large: need {total_bits} bits, have {capacity_bits} bits.")
+
+    bits = np.unpackbits(np.frombuffer(payload, dtype=np.uint8))
+    indices = generate_magic_indices(flat.size)
+
     new_flat = flat.copy()
     bit_idx = 0
-    for i in range(flat.size):
+    for idx in indices:
+        for b in range(bits_per_pixel):
+            if bit_idx >= total_bits:
+                break
+            mask = np.uint8(~(1 << b) & 0xFF)  # ✅ safe for uint8
+            new_flat[idx] = np.uint8(new_flat[idx] & mask)
+            new_flat[idx] = np.uint8(new_flat[idx] | ((bits[bit_idx] & 1) << b))
+            bit_idx += 1
         if bit_idx >= total_bits:
             break
-        k = min(bits_per_pixel, total_bits - bit_idx)
-        # take next k bits (msb-first in chunk)
-        chunk_val = 0
-        for j in range(k):
-            chunk_val = (chunk_val << 1) | bits[bit_idx + j]
-        # mask out lower k bits in pixel and set
-        mask = (~((1 << k) - 1)) & 0xFF
-        new_flat[i] = (new_flat[i] & mask) | chunk_val
-        bit_idx += k
-    return new_flat.reshape(channel.shape).astype("uint8")
 
+    return new_flat.reshape(channel.shape)
 
-def extract_bits_from_channel(channel, num_bits: int, bits_per_pixel: int = 4):
+def extract_bits_from_channel(channel: np.ndarray, num_bits: int, bits_per_pixel: int = 2) -> bytes:
     """
-    Extract num_bits from channel using bits_per_pixel per pixel (in same order as embed).
-    Returns a bytes object constructed from extracted bits (msb-first per byte).
+    Extract exactly num_bits from the channel's LSBs using the same visiting order.
+    Returns a bytes object constructed from those bits.
     """
-    import numpy as np
-    flat = channel.flatten().astype(int)
+    if bits_per_pixel < 1 or bits_per_pixel > 4:
+        raise ValueError("bits_per_pixel must be between 1 and 4.")
+
+    flat = channel.flatten().astype(np.uint8)
+    indices = generate_magic_indices(flat.size)
+
     bits = []
     bit_idx = 0
-    for i in range(flat.size):
+    for idx in indices:
+        for b in range(bits_per_pixel):
+            if bit_idx >= num_bits:
+                break
+            bits.append((flat[idx] >> b) & 1)
+            bit_idx += 1
         if bit_idx >= num_bits:
             break
-        k = min(bits_per_pixel, num_bits - bit_idx)
-        val = flat[i] & ((1 << k) - 1)
-        # reconstruct k bits in msb->lsb order:
-        for j in range(k):
-            bit = (val >> (k - 1 - j)) & 1
-            bits.append(bit)
-        bit_idx += k
-    return bitlist_to_bytes(bits)
+
+    bits_arr = np.array(bits, dtype=np.uint8)
+    pad = (-len(bits_arr)) % 8
+    if pad:
+        bits_arr = np.concatenate([bits_arr, np.zeros(pad, dtype=np.uint8)])
+    return np.packbits(bits_arr).tobytes()
