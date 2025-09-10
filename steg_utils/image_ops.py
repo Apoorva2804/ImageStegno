@@ -1,28 +1,22 @@
 from PIL import Image
 import numpy as np
 
-
 def load_image(path: str) -> np.ndarray:
     img = Image.open(path).convert("RGB")
-    arr = np.array(img, dtype=np.uint8)
-    return arr
-
+    return np.array(img, dtype=np.uint8)
 
 def save_image(arr: np.ndarray, path: str):
     Image.fromarray(arr.astype("uint8")).save(path)
-
 
 def flip_transpose(img_arr: np.ndarray) -> np.ndarray:
     """
     Apply the internal transform used by the algorithm:
     - transpose (swap axes)
     - horizontal flip
-    This is the internal processed version used for embedding/extraction.
     """
     img_t = np.transpose(img_arr, (1, 0, 2))
     img_t = np.flip(img_t, axis=1)
     return img_t
-
 
 def inv_flip_transpose(img_arr: np.ndarray) -> np.ndarray:
     """
@@ -32,18 +26,20 @@ def inv_flip_transpose(img_arr: np.ndarray) -> np.ndarray:
     img_t = np.transpose(img_t, (1, 0, 2))
     return img_t
 
-
 def split_rgb(img_arr: np.ndarray):
     r = img_arr[:, :, 0].copy()
     g = img_arr[:, :, 1].copy()
     b = img_arr[:, :, 2].copy()
     return r, g, b
 
-
 def merge_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
+<<<<<<< HEAD
     arr = np.stack([r, g, b], axis=2).astype("uint8")
     return arr
 
+=======
+    return np.stack([r, g, b], axis=2).astype("uint8")
+>>>>>>> origin/main
 
 def split_blue_blocks(blue: np.ndarray):
     """
@@ -52,24 +48,16 @@ def split_blue_blocks(blue: np.ndarray):
     Returns list [BC1, BC2, BC3, BC4]
     """
     h, w = blue.shape
-    mh = h // 2
-    mw = w // 2
+    mh, mw = h // 2, w // 2
     bc1 = blue[0:mh, 0:mw].copy()
     bc2 = blue[0:mh, mw:w].copy()
     bc3 = blue[mh:h, 0:mw].copy()
     bc4 = blue[mh:h, mw:w].copy()
     return [bc1, bc2, bc3, bc4]
 
-
 def combine_blue_blocks(blocks: list, shape: tuple):
-    """
-    Combine 4 blocks back into blue channel with same shapes as split.
-    blocks: [bc1, bc2, bc3, bc4]
-    shape: (h, w)
-    """
     h, w = shape
-    mh = h // 2
-    mw = w // 2
+    mh, mw = h // 2, w // 2
     out = np.zeros((h, w), dtype=np.uint8)
     out[0:mh, 0:mw] = blocks[0]
     out[0:mh, mw:w] = blocks[1]
