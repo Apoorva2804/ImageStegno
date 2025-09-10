@@ -2,43 +2,70 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-def rs_analysis(image_path, out_path="results/rs_plot.png"):
+def rs_analysis(image_path, block_size=2):
+    # Load grayscale image
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    img = img.astype(np.int16)
-    n = img.size
+    if img is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
 
-    # Grouping pixels into pairs
-    pairs = img.flatten().reshape(-1,2)
+    # Flatten into 1D array
+    pixels = img.flatten()
 
-    def f(group):  # discrimination function
-        return abs(group[0]-group[1])
+    # Group pixels into non-overlapping blocks
+    n_blocks = len(pixels) // block_size
+    pixels = pixels[:n_blocks * block_size].reshape(n_blocks, block_size)
 
-    R, S = [], []
-    for p in pairs:
-        orig = f(p)
-        flip = f([p[0]^1, p[1]^1])  # flip LSBs
-        if flip > orig:
-            R.append(1)
-        elif flip < orig:
-            S.append(1)
+    # Discriminant function (sum of absolute differences)
+    def f(block):
+        return np.sum(np.abs(np.diff(block)))
 
-    Rm = len(R)/len(pairs)
-    Sm = len(S)/len(pairs)
+    # Flip mask
+    mask = np.array([1, -1] * (block_size // 2))
 
-    plt.figure(figsize=(8,5))
-    plt.plot([20,40,60,80,100],[Rm]*5,"r-",label="Rm")
-    plt.plot([20,40,60,80,100],[Sm]*5,"b-",label="Sm")
-    plt.xlabel("Percentage of hiding capacity")
-    plt.ylabel("Fraction of groups")
-    plt.title("RS Analysis")
+    R, Rm, S, Sm = [], [], [], []
+
+    # Loop over embedding rates (0–100%)
+    for p in range(0, 101, 10):
+        n_flips = int((p / 100.0) * n_blocks)
+        indices = np.random.choice(n_blocks, n_flips, replace=False)
+        modified = pixels.copy()
+
+        # Apply flipping
+        modified[indices] = np.clip(modified[indices] + mask, 0, 255)
+
+        # Count Regular (R) and Singular (S) groups
+        F_orig = np.array([f(b) for b in pixels])
+        F_mod = np.array([f(b) for b in modified])
+
+        R_count = np.sum(F_mod > F_orig)
+        S_count = np.sum(F_mod < F_orig)
+
+        R.append(R_count / n_blocks)
+        S.append(S_count / n_blocks)
+
+        # For negative flipping
+        modified_neg = pixels.copy()
+        modified_neg[indices] = np.clip(modified_neg[indices] - mask, 0, 255)
+        F_mod_neg = np.array([f(b) for b in modified_neg])
+
+        Rm_count = np.sum(F_mod_neg > F_orig)
+        Sm_count = np.sum(F_mod_neg < F_orig)
+
+        Rm.append(Rm_count / n_blocks)
+        Sm.append(Sm_count / n_blocks)
+
+    # Plot
+    plt.figure(figsize=(8, 6))
+    plt.plot(range(0, 101, 10), R, 'r-', label="R(p)")
+    plt.plot(range(0, 101, 10), Rm, 'r--', label="R(-p)")
+    plt.plot(range(0, 101, 10), S, 'b-', label="S(p)")
+    plt.plot(range(0, 101, 10), Sm, 'b--', label="S(-p)")
+    plt.xlabel("Percentage of Hiding Capacity")
+    plt.ylabel("Fraction of Regular & Singular Groups")
+    plt.title("RS Steganalysis")
     plt.legend()
-    plt.savefig(out_path, dpi=300)
+    plt.grid(True)
     plt.show()
 
-
-# plot_histograms("input/cover.png", "output/stego.png")
-# plot_pdh("input/cover.png", "output/stego.png")
-# rs_analysis("output/stego.png")
-
-
+# Example usage
 rs_analysis("output/stego.png")
