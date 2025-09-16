@@ -33,13 +33,9 @@ def split_rgb(img_arr: np.ndarray):
     return r, g, b
 
 def merge_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
-<<<<<<< HEAD
     arr = np.stack([r, g, b], axis=2).astype("uint8")
     return arr
 
-=======
-    return np.stack([r, g, b], axis=2).astype("uint8")
->>>>>>> origin/main
 
 def split_blue_blocks(blue: np.ndarray):
     """
