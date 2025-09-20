@@ -1,173 +1,175 @@
+import sys
 from pathlib import Path
-from steg_utils import image_ops, utils, encryption
+from steg_utils import encryption, image_ops, utils
+from histogram import plot_side_by_side_hist
+from rs_analysis import rs_analysis
+from pdh_plot import plot_pdh
+from metrics import run_single_pair, print_table, save_csv
 
 OUTPUT_DIR = Path("output")
+RESULTS_DIR = Path("results")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def embed_text_into_image(cover_path: str, secret_file: str, key: str, bits_per_pixel: int = 2):
-    # Load and preprocess
+# ---------- Core Functions ----------
+
+def encrypt_text_file(secret_path: str, key: str, out_file: str = "output/encrypted.bin"):
+    secret_bytes = utils.text_to_bytes(secret_path)
+    cipher = encryption.mle_encrypt(secret_bytes, key)
+    Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "wb") as f:
+        f.write(cipher)
+    print(f"[+] Encrypted text saved to {out_file}")
+    return out_file
+
+
+def decrypt_text_file(enc_file: str, key: str, out_file: str = "output/decrypted.txt"):
+    with open(enc_file, "rb") as f:
+        cipher = f.read()
+    plain = encryption.mle_decrypt(cipher, key)
+    text = utils.bytes_to_text(plain)
+    Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"[+] Decrypted text saved to {out_file}")
+    print("--------------------------------------------------")
+    print(text)
+    print("--------------------------------------------------")
+    return text
+
+
+def embed_text_into_image(cover_path: str, enc_file: str, key: str, bits_per_pixel: int = 2):
     img = image_ops.load_image(cover_path)
     proc = image_ops.flip_transpose(img)
     r, g, b = image_ops.split_rgb(proc)
+    h, w = b.shape
 
-    # Read secret text from file
-    text = Path(secret_file).read_text(encoding="utf-8").strip()
-
-    # Convert text to bytes
-    msg_bytes = utils.text_to_bytes(text)
-
-    # Use red channel values
-    red_flat = r.flatten()  # copy; safe for read-only usage
-    if len(msg_bytes) > red_flat.size:
-        raise ValueError("Message too large to hide using the chosen image's red channel length.")
-
-    # calDiff = (msg[i] - r[i]) mod 256
-    caldiff = bytes(((msg_bytes[i] - int(red_flat[i])) % 256) for i in range(len(msg_bytes)))
-
-    # Encrypt
-    cipher_bytes = encryption.mle_encrypt(caldiff, key)
-
-    # payload = [len(cipher), cipher]
-    cipher_len = len(cipher_bytes)
-    header = cipher_len.to_bytes(4, "big")
-    payload = header + cipher_bytes
-
-    # Shuffle blue channel with key-derived permutation
+    blocks, split_indices = image_ops.split_blue_blocks(b)
     perm = utils.generate_perm_from_key(key)
-    shuffled_blue = utils.make_shuffled_blue(b, perm)
+    shuffled = [blocks[p] for p in perm]
+    shuffled_blue = image_ops.combine_blue_blocks(shuffled, (h, w), split_indices)
 
-    # Embed payload in shuffled blue channel
-    new_shuffled_blue = utils.embed_payload_in_channel(
-        shuffled_blue, payload, bits_per_pixel=bits_per_pixel
-    )
+    with open(enc_file, "rb") as f:
+        cipher = f.read()
 
-    # Restore blue channel visually (undo shuffle for display)
-    new_b = utils.unshuffle_to_visual(new_shuffled_blue, perm)
+    header = len(cipher).to_bytes(4, "big")
+    payload = header + cipher
 
-    # Combine channels and restore orientation
-    stego_proc = image_ops.merge_rgb(r, g, new_b)
-    stego_img = image_ops.inv_flip_transpose(stego_proc)
+    stego_shuffled_blue = utils.embed_payload_in_channel(shuffled_blue, payload, bits_per_pixel)
 
-    # Save
+    stego_blue = utils.unshuffle_to_visual_with_indices(stego_shuffled_blue, perm, split_indices)
+
+    stego_proc = image_ops.merge_rgb(r, g, stego_blue)
+    stego = image_ops.inv_flip_transpose(stego_proc)
+
     out_path = OUTPUT_DIR / "stego.png"
-    image_ops.save_image(stego_img, out_path)
-
+    image_ops.save_image(stego, str(out_path))
     print(f"[+] Stego image saved to {out_path}")
     return out_path
 
 
-def extract_text_from_image(stego_path: str, key: str, bits_per_pixel: int = 2):
-    # Load and preprocess
+def extract_text_from_image(stego_path: str, key: str, bits_per_pixel: int = 2, out_file: str = "output/extracted.bin"):
     img = image_ops.load_image(stego_path)
     proc = image_ops.flip_transpose(img)
     r, g, b = image_ops.split_rgb(proc)
 
-    # Prepare shuffled view for reading
     perm = utils.generate_perm_from_key(key)
-    shuffled_view_for_read = utils.make_shuffled_blue(b, perm)
+    shuffled_blue = utils.make_shuffled_blue(b, perm)
 
-    # Read 4-byte header (32 bits) to get cipher length
-    header_bits = 32
-    header_bytes = utils.extract_bits_from_channel(
-        shuffled_view_for_read, header_bits, bits_per_pixel=bits_per_pixel
-    )
-    if len(header_bytes) != 4:
-        raise ValueError("Failed to read header bytes from stego image.")
+    header_bytes = utils.extract_bits_from_channel(shuffled_blue, 32, bits_per_pixel)
     cipher_len = int.from_bytes(header_bytes, "big")
 
-    # Read full payload: header + cipher body, then slice out cipher
-    total_bits_to_read = header_bits + cipher_len * 8
-    combined = utils.extract_bits_from_channel(
-        shuffled_view_for_read, total_bits_to_read, bits_per_pixel=bits_per_pixel
-    )
-    # combined begins with 4 header bytes, followed by cipher bytes
+    total_bits = (cipher_len * 8) + 32
+    combined = utils.extract_bits_from_channel(shuffled_blue, total_bits, bits_per_pixel)
     cipher_bytes = combined[4:4 + cipher_len]
-    if len(cipher_bytes) != cipher_len:
-        raise ValueError("Cipher length mismatch when extracting from image.")
 
-    # Decrypt to caldiff
-    caldiff = encryption.mle_decrypt(cipher_bytes, key)
+    Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "wb") as f:
+        f.write(cipher_bytes)
 
-    # Recover original bytes using red channel
-    red_flat = r.flatten()
-    if len(caldiff) > red_flat.size:
-        raise ValueError("Unexpected: decrypted payload larger than red pixel count used.")
-    msg_bytes = bytes(((caldiff[i] + int(red_flat[i])) % 256) for i in range(len(caldiff)))
+    print(f"[+] Extracted encrypted data saved to {out_file}")
+    return out_file
 
-    # Decode text
-    text = utils.bytes_to_text(msg_bytes)
 
-    # Save recovered
-    out = OUTPUT_DIR / "recovered.txt"
-    out.write_text(text, encoding="utf-8")
+# ---------- Extra Features ----------
 
-    print("[+] Recovered message:")
-    print("--------------------------------------------------")
-    print(text)
-    print("--------------------------------------------------")
-    print(f"[+] Also saved to: {out}")
-    return text
+def run_histogram():
+    plot_side_by_side_hist("input/cover.png", "output/stego.png", "results/hist_side_by_side.png")
 
+
+def run_rs_analysis():
+    rs_analysis("output/stego.png")
+
+
+def run_pdh():
+    plot_pdh("input/cover.png", "output/stego.png", "results/pdh.png")
+
+
+def run_metrics():
+    results = run_single_pair("input/cover.png", "output/stego.png", [128, 256, 512, 1024])
+    print_table(results)
+    save_csv(results, "results/metrics_single_pair.csv")
+    print("[+] Metrics saved to results/metrics_single_pair.csv")
+
+
+# ---------- Interactive Menu ----------
 
 def main():
-    print("=== Steganography with MLE Encryption ===")
-    print("1. Embed message into image")
-    print("2. Extract message from image")
-    print("3. Encrypt text only")
-    print("4. Decrypt text only")
-    choice = input("Choose an option: ").strip()
+    while True:
+        print("\n===== Image Steganography Menu =====")
+        print("1. Encrypt text")
+        print("2. Embed encrypted text in image")
+        print("3. Extract encrypted text from stego image")
+        print("4. Decrypt text")
+        print("5. Plot Histogram (Cover vs Stego)")
+        print("6. RS Analysis (Stego)")
+        print("7. Pixel Difference Histogram (Cover vs Stego)")
+        print("8. Compute Metrics (MSE, RMSE, PSNR, SSIM, NCC)")
+        print("9. Exit")
+        choice = input("Enter choice (1-9): ").strip()
 
-    if choice == "1":
-        cover = input("Cover image path [input/cover.png]: ").strip() or "input/cover.png"
-        secret_file = "input/secret.txt"
-        key = input("Secret key / password: ").strip()
-        bpp_in = input("Bits per pixel to use (1-4) [2]: ").strip() or "2"
-        try:
-            bpp = int(bpp_in)
-            if bpp < 1 or bpp > 4:
-                raise ValueError
-        except Exception:
-            print("Invalid bits per pixel. Using 2.")
-            bpp = 2
-        embed_text_into_image(cover, secret_file, key, bits_per_pixel=bpp)
+        if choice == "1":
+            secret = input("Secret text file path [input/secret.txt]: ").strip() or "input/secret.txt"
+            key = input("Secret key / password: ").strip()
+            encrypt_text_file(secret, key)
 
-    elif choice == "2":
-        stego = input("Stego image path [output/stego.png]: ").strip() or "output/stego.png"
-        key = input("Secret key / password: ").strip()
-        bpp_in = input("Bits per pixel used when embedding (1-4) [2]: ").strip() or "2"
-        try:
-            bpp = int(bpp_in)
-            if bpp < 1 or bpp > 4:
-                raise ValueError
-        except Exception:
-            print("Invalid bits per pixel. Using 2.")
-            bpp = 2
-        extract_text_from_image(stego, key, bits_per_pixel=bpp)
+        elif choice == "2":
+            cover = input("Cover image path [input/cover.png]: ").strip() or "input/cover.png"
+            enc_file = input("Encrypted file path [output/encrypted.bin]: ").strip() or "output/encrypted.bin"
+            key = input("Secret key / password: ").strip()
+            bpp = int(input("Bits per pixel (1-4) [2]: ").strip() or 2)
+            embed_text_into_image(cover, enc_file, key, bpp)
 
-    elif choice == "3":
-        msg = input("Enter text to encrypt: ").strip()
-        key = input("Secret key / password: ").strip()
-        cipher = encryption.mle_encrypt(msg.encode("utf-8"), key)
-        out = OUTPUT_DIR / "cipher.bin"
-        out.write_bytes(cipher)
-        print(f"[+] Cipher saved to {out}")
+        elif choice == "3":
+            stego = input("Stego image path [output/stego.png]: ").strip() or "output/stego.png"
+            key = input("Secret key / password: ").strip()
+            bpp = int(input("Bits per pixel (1-4) [2]: ").strip() or 2)
+            extract_text_from_image(stego, key, bpp)
 
-    elif choice == "4":
-        cipher_path = input("Cipher file path [output/cipher.bin]: ").strip() or "output/cipher.bin"
-        key = input("Secret key / password: ").strip()
-        cipher_bytes = Path(cipher_path).read_bytes()
-        plain = encryption.mle_decrypt(cipher_bytes, key)
-        try:
-            txt = plain.decode("utf-8")
-        except UnicodeDecodeError:
-            txt = str(plain)
-        print("[+] Decrypted text:")
-        print("--------------------------------------------------")
-        print(txt)
-        print("--------------------------------------------------")
-    else:
-        print("Invalid choice.")
+        elif choice == "4":
+            enc_file = input("Encrypted file path [output/extracted.bin]: ").strip() or "output/extracted.bin"
+            key = input("Secret key / password: ").strip()
+            decrypt_text_file(enc_file, key)
+
+        elif choice == "5":
+            run_histogram()
+
+        elif choice == "6":
+            run_rs_analysis()
+
+        elif choice == "7":
+            run_pdh()
+
+        elif choice == "8":
+            run_metrics()
+
+        elif choice == "9":
+            print("Exiting...")
+            sys.exit(0)
+
+        else:
+            print("Invalid choice, try again.")
 
 
 if __name__ == "__main__":

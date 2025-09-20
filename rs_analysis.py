@@ -1,39 +1,34 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
-def rs_analysis(image_path, block_size=2):
-    # Load grayscale image
+def rs_analysis(image_path, out_path="results/rs_plot.png", block_size=2):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(f"Image not found: {image_path}")
 
-    # Flatten into 1D array
     pixels = img.flatten()
-
-    # Group pixels into non-overlapping blocks
     n_blocks = len(pixels) // block_size
     pixels = pixels[:n_blocks * block_size].reshape(n_blocks, block_size)
 
-    # Discriminant function (sum of absolute differences)
     def f(block):
         return np.sum(np.abs(np.diff(block)))
 
-    # Flip mask
     mask = np.array([1, -1] * (block_size // 2))
 
     R, Rm, S, Sm = [], [], [], []
 
-    # Loop over embedding rates (0–100%)
-    for p in range(0, 101, 10):
+    # embedding rate from 0 to 100%
+    rates = list(range(0, 101, 10))
+    for p in rates:
         n_flips = int((p / 100.0) * n_blocks)
         indices = np.random.choice(n_blocks, n_flips, replace=False)
-        modified = pixels.copy()
 
-        # Apply flipping
+        # positive flipping
+        modified = pixels.copy()
         modified[indices] = np.clip(modified[indices] + mask, 0, 255)
 
-        # Count Regular (R) and Singular (S) groups
         F_orig = np.array([f(b) for b in pixels])
         F_mod = np.array([f(b) for b in modified])
 
@@ -43,7 +38,7 @@ def rs_analysis(image_path, block_size=2):
         R.append(R_count / n_blocks)
         S.append(S_count / n_blocks)
 
-        # For negative flipping
+        # negative flipping
         modified_neg = pixels.copy()
         modified_neg[indices] = np.clip(modified_neg[indices] - mask, 0, 255)
         F_mod_neg = np.array([f(b) for b in modified_neg])
@@ -54,18 +49,23 @@ def rs_analysis(image_path, block_size=2):
         Rm.append(Rm_count / n_blocks)
         Sm.append(Sm_count / n_blocks)
 
-    # Plot
     plt.figure(figsize=(8, 6))
-    plt.plot(range(0, 101, 10), R, 'r-', label="R(p)")
-    plt.plot(range(0, 101, 10), Rm, 'r--', label="R(-p)")
-    plt.plot(range(0, 101, 10), S, 'b-', label="S(p)")
-    plt.plot(range(0, 101, 10), Sm, 'b--', label="S(-p)")
-    plt.xlabel("Percentage of Hiding Capacity")
-    plt.ylabel("Fraction of Regular & Singular Groups")
+    plt.plot(rates, R, "r-", label="R(p)")
+    plt.plot(rates, Rm, "r--", label="R(-p)")
+    plt.plot(rates, S, "b-", label="S(p)")
+    plt.plot(rates, Sm, "b--", label="S(-p)")
+
+    plt.xlabel("Embedding Rate (%)")
+    plt.ylabel("Fraction of Groups")
     plt.title("RS Steganalysis")
     plt.legend()
-    plt.grid(True)
-    plt.show()
+    plt.grid(True, linestyle="--", alpha=0.6)
 
-# Example usage
-rs_analysis("output/stego.png")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.show()
+    print(f"[+] Saved RS analysis plot to {out_path}")
+
+
+if __name__ == "__main__":
+    rs_analysis("output/stego.png")
