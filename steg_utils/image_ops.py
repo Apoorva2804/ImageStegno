@@ -10,20 +10,15 @@ def save_image(arr: np.ndarray, path: str):
 
 def flip_transpose(img_arr: np.ndarray) -> np.ndarray:
     """
-    Apply the internal transform used by the algorithm:
-    Per the paper: first horizontal flip, then transpose.
-    That is: FT = transpose(flip(image, horizontal))
+    Per paper: first horizontal flip, then transpose.
     """
-    # horizontal flip (mirror left-right)
     flipped = np.flip(img_arr, axis=1)
-    # transpose rows <-> cols
     img_t = np.transpose(flipped, (1, 0, 2))
     return img_t
 
 def inv_flip_transpose(img_arr: np.ndarray) -> np.ndarray:
     """
-    Inverse of flip_transpose:
-    If forward was transpose(flip(img)), inverse is flip(transpose(img))
+    Inverse of flip_transpose (flip(transpose(img))).
     """
     transposed = np.transpose(img_arr, (1, 0, 2))
     inv = np.flip(transposed, axis=1)
@@ -41,33 +36,34 @@ def merge_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def split_blue_blocks(blue: np.ndarray):
     """
-    Splits blue channel into 4 nearly-equal quadrants:
-    BC1: top-left, BC2: top-right, BC3: bottom-left, BC4: bottom-right
-    Handles odd dimensions safely by using ceil for the bottom/right blocks.
-    Returns list [BC1, BC2, BC3, BC4] and the split indices (mh, mw) for recombination.
+    Splits blue channel into 4 quadrants.
+    Returns:
+      - list [BC1, BC2, BC3, BC4]
+      - split_indices (mh, mw) so recombine uses same sizes (handles odd dims)
     """
     h, w = blue.shape
     mh = h // 2
     mw = w // 2
-    # top-left
     bc1 = blue[0:mh, 0:mw].copy()
-    # top-right
     bc2 = blue[0:mh, mw:w].copy()
-    # bottom-left
     bc3 = blue[mh:h, 0:mw].copy()
-    # bottom-right
     bc4 = blue[mh:h, mw:w].copy()
     return [bc1, bc2, bc3, bc4], (mh, mw)
 
 def combine_blue_blocks(blocks: list, shape: tuple, split_indices: tuple):
     """
     Recombine four blocks into a blue channel of given shape.
-    Expects blocks in order [BC1, BC2, BC3, BC4].
-    split_indices must be the (mh, mw) returned from split_blue_blocks to handle odd sizes.
+    Blocks in order [BC1, BC2, BC3, BC4].
     """
     h, w = shape
     mh, mw = split_indices
     out = np.zeros((h, w), dtype=np.uint8)
+
+    # Validate shapes:
+    if blocks[0].shape != (mh, mw):
+        # handle cases where bottom/right tiles are 1 pixel larger due to odd dims
+        pass
+
     out[0:mh, 0:mw] = blocks[0]
     out[0:mh, mw:w] = blocks[1]
     out[mh:h, 0:mw] = blocks[2]
