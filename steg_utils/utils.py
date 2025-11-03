@@ -17,7 +17,7 @@ def make_shuffled_blue(blue: np.ndarray, perm):
     shuffled = [blocks[perm[i]] for i in range(4)]
     return combine_blue_blocks(shuffled, blue.shape, split_indices)
 
-
+#Reaarange pixels of sub-Image
 def unshuffle_to_visual_with_indices(blue_after_embed: np.ndarray, perm, split_indices):
     """
     Inverse of make_shuffled_blue: place blocks back in their original visual quadrants.
@@ -58,19 +58,19 @@ def generate_perm_from_key(key: str):
 # ------------------------------
 # Magic-square-based visiting order
 # ------------------------------
-def generate_magic_indices(size: int):
-    n = int(np.floor(np.sqrt(size)))
+# utils.py
+import numpy as np
+from .magic_lsb import generate_magic_square
+
+def generate_magic_indices(size: int) -> np.ndarray:
+    # Magic-square visiting order -> single full permutation of [0..size-1]
+    n = int(np.ceil(np.sqrt(size)))
     if n % 2 == 0:
-        n -= 1
-    if n < 3:
-        n = 3
-    base_magic = generate_magic_square(n).flatten() - 1
-    indices = []
-    while len(indices) < size:
-        indices.extend(base_magic.tolist())
-    return np.array(indices[:size])
-
-
+        n += 1
+    M = generate_magic_square(n)            # values 1..n^2
+    order = np.argsort(M, axis=None)        # sort by magic value
+    perm = order[order < size]              # take first `size` unique indices
+    return perm.astype(np.int64)
 # ------------------------------
 # LSB embedding / extraction
 # ------------------------------

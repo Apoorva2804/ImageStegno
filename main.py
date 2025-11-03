@@ -11,7 +11,6 @@ RESULTS_DIR = Path("results")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-
 # ---------- Core Functions ----------
 
 def encrypt_text_file(secret_path: str, key: str, out_file: str = "output/encrypted.bin"):
@@ -22,7 +21,6 @@ def encrypt_text_file(secret_path: str, key: str, out_file: str = "output/encryp
         f.write(cipher)
     print(f"[+] Encrypted text saved to {out_file}")
     return out_file
-
 
 def decrypt_text_file(enc_file: str, key: str, out_file: str = "output/decrypted.txt"):
     with open(enc_file, "rb") as f:
@@ -38,26 +36,32 @@ def decrypt_text_file(enc_file: str, key: str, out_file: str = "output/decrypted
     print("--------------------------------------------------")
     return text
 
-
-def embed_text_into_image(cover_path: str, enc_file: str, key: str, bits_per_pixel: int = 2):
+def embed_text_into_image(cover_path: str, enc_file: str, key: str, bits_per_pixel: int = 1):
     img = image_ops.load_image(cover_path)
     proc = image_ops.flip_transpose(img)
     r, g, b = image_ops.split_rgb(proc)
     h, w = b.shape
 
+    # Split + shuffle blue
     blocks, split_indices = image_ops.split_blue_blocks(b)
     perm = utils.generate_perm_from_key(key)
     shuffled = [blocks[p] for p in perm]
     shuffled_blue = image_ops.combine_blue_blocks(shuffled, (h, w), split_indices)
 
+    # Read encrypted payload
     with open(enc_file, "rb") as f:
         cipher = f.read()
 
+    # Header + cipher
     header = len(cipher).to_bytes(4, "big")
     payload = header + cipher
 
-    stego_shuffled_blue = utils.embed_payload_in_channel(shuffled_blue, payload, bits_per_pixel)
+    # Embed into shuffled blue using key-based pixel permutation
+    stego_shuffled_blue = utils.embed_payload_in_channel(
+        shuffled_blue, payload, bits_per_pixel=bits_per_pixel
+    )
 
+    # Unshuffle back to visual
     stego_blue = utils.unshuffle_to_visual_with_indices(stego_shuffled_blue, perm, split_indices)
 
     stego_proc = image_ops.merge_rgb(r, g, stego_blue)
@@ -68,20 +72,29 @@ def embed_text_into_image(cover_path: str, enc_file: str, key: str, bits_per_pix
     print(f"[+] Stego image saved to {out_path}")
     return out_path
 
-
-def extract_text_from_image(stego_path: str, key: str, bits_per_pixel: int = 2, out_file: str = "output/extracted.bin"):
+def extract_text_from_image(
+    stego_path: str, key: str, bits_per_pixel: int = 1, out_file: str = "output/extracted.bin"
+):
     img = image_ops.load_image(stego_path)
     proc = image_ops.flip_transpose(img)
     r, g, b = image_ops.split_rgb(proc)
+    h, w = b.shape
 
+    # Shuffle blue as embedding did
     perm = utils.generate_perm_from_key(key)
-    shuffled_blue = utils.make_shuffled_blue(b, perm)
+    shuffled_blue, split_indices = utils.make_shuffled_blue(b, perm)
 
-    header_bytes = utils.extract_bits_from_channel(shuffled_blue, 32, bits_per_pixel)
+    # Header (cipher length: 32 bits)
+    header_bytes = utils.extract_bits_from_channel(
+        shuffled_blue, 32, bits_per_pixel=bits_per_pixel
+    )  # Removed key argument
     cipher_len = int.from_bytes(header_bytes, "big")
 
+    # Cipher
     total_bits = (cipher_len * 8) + 32
-    combined = utils.extract_bits_from_channel(shuffled_blue, total_bits, bits_per_pixel)
+    combined = utils.extract_bits_from_channel(
+        shuffled_blue, total_bits, bits_per_pixel=bits_per_pixel
+    )  # Removed key argument
     cipher_bytes = combined[4:4 + cipher_len]
 
     Path(out_file).parent.mkdir(parents=True, exist_ok=True)
@@ -91,27 +104,32 @@ def extract_text_from_image(stego_path: str, key: str, bits_per_pixel: int = 2, 
     print(f"[+] Extracted encrypted data saved to {out_file}")
     return out_file
 
-
 # ---------- Extra Features ----------
 
 def run_histogram():
-    plot_side_by_side_hist("input/cover.png", "output/stego.png", "results/hist_side_by_side.png")
-
+    plot_side_by_side_hist(
+        "input/cover.png", "output/stego.png", "results/hist_side_by_side.png"
+    )
 
 def run_rs_analysis():
     rs_analysis("output/stego.png")
 
-
 def run_pdh():
     plot_pdh("input/cover.png", "output/stego.png", "results/pdh.png")
 
-
+# main.py — replace run_metrics()
 def run_metrics():
-    results = run_single_pair("input/cover.png", "output/stego.png", [128, 256, 512, 1024])
+    key = input("Secret key / password (same as embedding): ").strip()
+    bpp_in = input("Bits per pixel (1-4) [1]: ").strip() or "1"
+    bpp = int(bpp_in)
+    dims = [128, 256, 512, 1024]
+    enc_file = "output/encrypted.bin"
+    if not Path(enc_file).exists():
+        print("[!] Encrypted payload not found, run option 1 first."); return
+    results = run_single_pair("input/cover.png", enc_file, key, bpp, dims)
     print_table(results)
     save_csv(results, "results/metrics_single_pair.csv")
     print("[+] Metrics saved to results/metrics_single_pair.csv")
-
 
 # ---------- Interactive Menu ----------
 
@@ -138,13 +156,15 @@ def main():
             cover = input("Cover image path [input/cover.png]: ").strip() or "input/cover.png"
             enc_file = input("Encrypted file path [output/encrypted.bin]: ").strip() or "output/encrypted.bin"
             key = input("Secret key / password: ").strip()
-            bpp = int(input("Bits per pixel (1-4) [2]: ").strip() or 2)
+            bpp_in = input("Bits per pixel (1-4) [1]: ").strip() or "1"
+            bpp = int(bpp_in)
             embed_text_into_image(cover, enc_file, key, bpp)
 
         elif choice == "3":
             stego = input("Stego image path [output/stego.png]: ").strip() or "output/stego.png"
             key = input("Secret key / password: ").strip()
-            bpp = int(input("Bits per pixel (1-4) [2]: ").strip() or 2)
+            bpp_in = input("Bits per pixel (1-4) [1]: ").strip() or "1"
+            bpp = int(bpp_in)
             extract_text_from_image(stego, key, bpp)
 
         elif choice == "4":
@@ -170,7 +190,6 @@ def main():
 
         else:
             print("Invalid choice, try again.")
-
 
 if __name__ == "__main__":
     main()

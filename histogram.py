@@ -3,34 +3,72 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+def _to_gray_uint8(img):
+    """Ensure image is grayscale and uint8 type."""
+    if img is None:
+        raise ValueError("Image not loaded properly (NoneType).")
 
-def plot_side_by_side_hist(cover_path: str, stego_path: str, out_path: str = "results/hist_side_by_side.png"):
-    # Load images in grayscale
-    cover = cv2.imread(cover_path, cv2.IMREAD_GRAYSCALE)
-    stego = cv2.imread(stego_path, cv2.IMREAD_GRAYSCALE)
+    # Convert to grayscale if RGB/BGR
+    if len(img.shape) == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    if cover is None or stego is None:
-        raise FileNotFoundError("Cover or stego image not found.")
+    # Convert to uint8 if not already
+    if img.dtype != np.uint8:
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+        img = img.astype(np.uint8)
 
-    # Compute histograms
-    cover_hist = cv2.calcHist([cover], [0], None, [256], [0, 256]).ravel()
-    stego_hist = cv2.calcHist([stego], [0], None, [256], [0, 256]).ravel()
+    return img
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    # Create figure
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+def _hist_gray(img):
+    """Compute histogram for a grayscale image safely."""
+    img = _to_gray_uint8(img)
+    hist = cv2.calcHist([img], [0], None, [256], [0, 256])
+    hist = hist.ravel().astype(np.float64)
 
-    axes[0].bar(range(256), cover_hist, color="blue", width=1)
-    axes[0].set_title("Cover Image Histogram")
-    axes[0].set_xlabel("Pixel Intensity")
-    axes[0].set_ylabel("Frequency")
+    # Smooth out sharp peaks (optional but helps)
+    hist = cv2.GaussianBlur(hist.reshape(-1, 1), (9, 9), 0).ravel()
+    return hist
 
-    axes[1].bar(range(256), stego_hist, color="red", width=1)
-    axes[1].set_title("Stego Image Histogram")
-    axes[1].set_xlabel("Pixel Intensity")
+
+def plot_side_by_side_hist(cover_path, stego_path, save_path="histogram_comparison.png"):
+    """Plot grayscale histograms of cover and stego images side by side."""
+    if not os.path.exists(cover_path):
+        raise FileNotFoundError(f"Cover image not found: {cover_path}")
+    if not os.path.exists(stego_path):
+        raise FileNotFoundError(f"Stego image not found: {stego_path}")
+
+    cover = cv2.imread(cover_path)
+    stego = cv2.imread(stego_path)
+
+    cover_hist = _hist_gray(cover)
+    stego_hist = _hist_gray(stego)
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(cover_hist, color='blue')
+    plt.title("Cover Image Histogram")
+    plt.xlabel("Pixel Intensity (0-255)")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle='--', alpha=0.5)
+
+    plt.subplot(1, 2, 2)
+    plt.plot(stego_hist, color='red')
+    plt.title("Stego Image Histogram")
+    plt.xlabel("Pixel Intensity (0-255)")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
-    plt.savefig(out_path, dpi=300)
-    plt.show()
-    print(f"[+] Histogram saved at {out_path}")
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+    print(f"✅ Histogram comparison saved as: {save_path}")
+
+
+# Example usage for testing (remove or comment out in main program)
+if __name__ == "__main__":
+    plot_side_by_side_hist(
+        cover_path="cover.png",
+        stego_path="stego.png"
+    )
